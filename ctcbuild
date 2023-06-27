@@ -1,0 +1,365 @@
+#!/bin/env bash
+
+# ctcbuild - Cross Toolchain Build Script
+#
+# Copyright (c) 2023 Michael Wichmann
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+# Ensure clean build environment - keep $HOME
+[ -z "$CLEANED" ] && exec /bin/env -i CLEANED=1 HOME=$HOME /bin/bash "$0" "$@"
+
+# Export minimal path
+export PATH=${PATH}
+
+# Script version
+SCRIPT_VERSION_STRING="0.1"
+
+# Safety first ... set some sensible options for script execution
+set -o errexit -o pipefail -o noclobber -o nounset
+
+# Test for getopt capabilites. Expected return value is 4, exit otherwise.
+! getopt --test > /dev/null
+if [[ ${PIPESTATUS[0]} -ne 4 ]]; then
+    echo "'getopt --test' failed."
+    exit 1
+fi
+
+# Print script usage information
+function print_usage {
+    NAME=$(basename -- $0)
+    echo "Usage: $NAME [-d] [-e|--envs <file>] <config>"
+    echo "       $NAME [--help]"
+}
+
+# Print script usage information and exit
+function print_usage_exit {
+    print_usage
+    exit 1
+}
+
+# Standard values for command line and configuration options.
+DEBUG=false
+JOBS=4
+DO_BUILD_NATIVE=true
+DO_BUILD_CROSS=true
+DO_MAKE_TARBALL=true
+
+# Command line options definitons for getopt
+LONGOPTS=debug,envs:,help
+OPTIONS=d,e:
+
+# Parse command line options with getopt
+! PARSED=$(getopt --options=$OPTIONS --longoptions=$LONGOPTS --name "$0" -- "$@")
+if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+    print_usage_exit
+fi
+eval set -- "$PARSED"
+while true; do
+    case "$1" in
+        # Print debug information and use set -x
+        -d|--debug)
+            DEBUG=true
+            shift
+            ;;
+        # Source additional configuraton scripts. As the options may
+        # apear multiple times on the command line, an arbitrary number
+        # of configuration scripts can be sourced.
+        -e|--envs)
+            echo "Sourcing '$2'"
+            source $2
+            shift 2
+            ;;
+        --help)
+            print_usage
+            exit 0
+            ;;
+        # Stop command line parsing after '--'
+        --)
+            shift
+            break
+            ;;
+        *)
+            print_usage_exit
+            ;;
+    esac
+done
+
+# Handle positional arguments. Print usage
+if [[ $# -ne 1 ]]; then
+    print_usage_exit
+fi
+CONFIG_SH=$1
+
+# Print splash
+echo "$(basename -- $0) v$SCRIPT_VERSION_STRING -- Cross Toolchain Builder"
+
+# Source configuration file
+source $CONFIG_SH
+
+# Set debugging mode
+if [[ $DEBUG = true ]]; then
+    #echo "--- Environment variables ---"
+    #printenv
+    #echo "---"
+    set -x
+fi
+
+# 1. Check / download sources
+# 2. Unpack sources to SRC_DIR
+# 3. Build native binutils
+# 4. Build native bootstrap gcc
+# 5. Build newlib
+# 6. Build gcc
+
+# Programs and tools
+WGET="wget"
+WGET_OPTS="--show-progress --no-clobber"
+UNTAR="tar -xf"
+LN_FS="ln -fs"
+LN_S="ln -s"
+
+#############################################################################
+# Helper Functions
+#############################################################################
+
+# ---------------------------------------------------------------------------
+# retrieve_source base_url archive repo_dir
+# ---------------------------------------------------------------------------
+retrieve_source() {
+    local base_url=$1
+    local archive=$2
+    local repo_dir=$3
+
+    local url="${base_url}/${archive}"
+
+    mkdir -p $repo_dir
+
+    if [[ -f "${repo_dir}/${archive}" ]]; then
+        echo "${archive} already exists in ${repo_dir}. Skipping..."
+    else
+        $WGET ${WGET_OPTS} --directory-prefix=${repo_dir} ${url}
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# retrieve_source repo_dir archive source_dir
+#
+# Paths can be relative.
+# ---------------------------------------------------------------------------
+prepare_source() {
+    local repo_dir=$1
+    local archive=$2
+    local source_dir=$3
+
+    local arcpath="${repo_dir}/${archive}"
+
+    mkdir -p $source_dir
+
+    if [[ -e "${source_dir}/${archive%.tar*}" ]]; then
+        echo "${archive%.tar*} already exists in ${source_dir}. Skipping..."
+    else
+        echo "...${archive}"
+        $UNTAR $arcpath --directory $source_dir
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# build build_dir src_dir conf_str targets
+# ---------------------------------------------------------------------------
+build() { (
+    local build_dir=$1
+    local src_dir=$2
+    local conf_str=$3
+    local targets=$4
+
+    echo "Start build..."
+    echo "build_dir=$build_dir"
+    echo "src_dir=$src_dir"
+    echo "conf_str=$conf_str"
+    echo "targets=$targets"
+
+    mkdir -p "${build_dir}"
+    cd "${build_dir}"
+
+    if [[ -f Makefile ]]; then
+        echo "Already configured. Using existing Makefile"
+    else
+        "${src_dir}"/configure ${conf_str}
+    fi
+
+    for target in ${targets}; do
+        make -j ${JOBS} ${target}
+    done
+) }
+
+#############################################################################
+# Main
+#############################################################################
+
+SOURCE_DIR="${BUILD_DIR}/${CONFIG_ID}/sources"
+
+# List of packages
+PKGS="GMP MPC MPFR ISL GCC BINUTILS NEWLIB GDB"
+
+echo "Downloading sources into ${REPO_DIR}"
+for pkg in $PKGS; do
+    base_url_name=${pkg}_BASE_URL
+    arc_name=${pkg}_ARC
+    base_url=${!base_url_name}
+    arc=${!arc_name}
+    retrieve_source $base_url $arc $REPO_DIR
+done
+
+echo "Unpacking sources into ${SOURCE_DIR}"
+for pkg in $PKGS; do
+    arc_name=${pkg}_ARC
+    arc=${!arc_name}
+    prepare_source $REPO_DIR $arc $SOURCE_DIR
+done
+
+echo "Creating symlinks for combined GCC build"
+GCC_SRC_DIR=${SOURCE_DIR}/${GCC_ARC%.tar*}
+$LN_FS ../${GMP_ARC%.tar*} ${GCC_SRC_DIR}/gmp
+$LN_FS ../${MPC_ARC%.tar*} ${GCC_SRC_DIR}/mpc
+$LN_FS ../${MPFR_ARC%.tar*} ${GCC_SRC_DIR}/mpfr
+$LN_FS ../${ISL_ARC%.tar*} ${GCC_SRC_DIR}/isl
+# Create symlinks for binutils
+# Do not overwrite gcc files - do not use -f in ln command
+BINUTILS_SRC_DIR=${SOURCE_DIR}/${BINUTILS_ARC%.tar*}
+for file in ${BINUTILS_SRC_DIR}/*; do
+    $LN_S "../${BINUTILS_ARC%.tar*}/$(basename -- $file)" ${GCC_SRC_DIR}/$(basename -- "$file") &> /dev/null || true
+done
+
+GCC_INSTALL_NATIVE_DIR=$(realpath "$(pwd)/${BUILD_DIR}/${CONFIG_ID}/install/${HOST}")
+
+# Build native compiler
+if [[ $DO_BUILD_NATIVE = true ]]; then
+    # Create and change into build directory
+    GCC_BUILD_NATIVE_DIR=${BUILD_DIR}/${CONFIG_ID}/build/${HOST}/${GCC_ARC%.tar*}
+    mkdir -p $GCC_BUILD_NATIVE_DIR
+    cd $GCC_BUILD_NATIVE_DIR
+
+    # Configure the native gcc
+    if [[ -f Makefile ]]; then
+        echo "Already configured. Using existing Makefile"
+    else
+        # C++ is needed for building the cross-toolchain in the next step
+        ../../../../../${GCC_SRC_DIR}/configure \
+            --target=$HOST                      \
+            --prefix=$GCC_INSTALL_NATIVE_DIR    \
+            ${CONFIG_NATIVE}
+    fi
+
+    # Start the build
+    make -j $JOBS all-gcc
+    make -j $JOBS all-target-libgcc
+    make -j $JOBS all-target-libada
+    make -j $JOBS all-target-libstdc++-v3
+    #make -j $JOBS all-gnattools
+
+    # Install the native/intermediate gcc.
+    make install-gcc
+    make install-target-libgcc
+    make install-target-libada
+    make install-target-libstdc++-v3
+    make install-binutils install-gas install-ld
+fi
+
+
+# Build the cross compiler for the specified target using the native
+# compiler which was build in the previous step
+if [[ $DO_BUILD_CROSS = true ]]; then
+    echo "Building cross GCC/GNAT"
+
+    # Prepend path with newly installed gcc
+    export PATH="${GCC_INSTALL_NATIVE_DIR}/bin:${PATH}"
+
+    # Check for required tools and correct path
+    # as, ld, gcc other binutils?
+    CHECK="ld as gcc"
+    for tool in ${CHECK}; do
+        chkpath=$(dirname $(which ${tool}))
+        if [[ x"${GCC_INSTALL_NATIVE_DIR}/bin" != x"${chkpath}" ]]; then
+            echo "Couldnt find ${tool} in ${GCC_INSTALL_NATIVE_DIR}/bin"
+            exit
+        fi
+    done
+
+    # Build stage1 cross compiler
+    stage1_build_dir=$(realpath -m "${BUILD_DIR}/${CONFIG_ID}/build/${TARGET}/stage1/${GCC_ARC%.tar*}")
+    stage1_install_dir=$(realpath -m "${BUILD_DIR}/${CONFIG_ID}/install/${TARGET}/stage1")
+    stage1_src_dir=$(realpath "${GCC_SRC_DIR}")
+    stage1_conf_str="--target=${TARGET} --prefix=${stage1_install_dir} ${CONFIG_STAGE1}"
+    stage1_targets="all-gcc install-gcc install-binutils install-gas install-ld"
+
+    #build "${stage1_build_dir}" "${stage1_src_dir}" "${stage1_conf_str}" "${stage1_targets}"
+
+    # Build newlib with stage1 compiler
+    export PATH="${stage1_install_dir}/bin:${PATH}"
+
+    # Check if we are using the correct tools from stage1 compiler
+    CHECK="arm-none-eabi-ld arm-none-eabi-as arm-none-eabi-gcc"
+    for tool in ${CHECK}; do
+        chkpath=$(dirname $(which ${tool}))
+        if [[ x"${stage1_install_dir}/bin" != x"${chkpath}" ]]; then
+            echo "Couldnt find ${tool} in ${stage1_install_dir}/bin"
+            exit
+        fi
+    done
+
+    newlib_build_dir=$(realpath -m "${BUILD_DIR}/${CONFIG_ID}/build/${TARGET}/stage2/${NEWLIB_ARC%.tar*}")
+    newlib_install_dir=$(realpath -m "${BUILD_DIR}/${CONFIG_ID}/install/${TARGET}/stage2")
+    newlib_src_dir=$(realpath "${SOURCE_DIR}/${NEWLIB_ARC%.tar*}")
+    newlib_conf_str="--target=${TARGET} --prefix=${newlib_install_dir} ${CONFIG_NEWLIB}"
+    newlib_targets="all install"
+
+    #build "${newlib_build_dir}" "${newlib_src_dir}" "${newlib_conf_str}" "${newlib_targets}"
+
+    # Build stage2 cross compiler
+    stage2_build_dir=$(realpath -m "${BUILD_DIR}/${CONFIG_ID}/build/${TARGET}/stage2/${GCC_ARC%.tar*}")
+    stage2_install_dir=$(realpath -m "${BUILD_DIR}/${CONFIG_ID}/install/${TARGET}/stage2")
+    stage2_src_dir=$(realpath "${GCC_SRC_DIR}")
+    stage2_conf_str="--target=${TARGET} --prefix=${stage2_install_dir} ${CONFIG_STAGE2} --with-sysroot=${stage2_install_dir}/${TARGET}"
+    stage2_targets="all-gcc all-target-libgcc all-target-libada install-gcc install-target-libgcc install-target-libada install-binutils install-gas install-ld"
+
+    #build "${stage2_build_dir}" "${stage2_src_dir}" "${stage2_conf_str}" "${stage2_targets}"
+
+    # Build gdb
+    gdb_build_dir=$(realpath -m "${BUILD_DIR}/${CONFIG_ID}/build/${TARGET}/stage2/${GDB_ARC%.tar*}")
+    gdb_install_dir=$(realpath -m "${BUILD_DIR}/${CONFIG_ID}/install/${TARGET}/stage2")
+    gdb_src_dir=$(realpath "${SOURCE_DIR}/${GDB_ARC%.tar*}")
+    gdb_conf_str="--target=${TARGET} --prefix=${gdb_install_dir} ${CONFIG_GDB}"
+    gdb_targets="all-gdb install-gdb"
+
+    #build "${gdb_build_dir}" "${gdb_src_dir}" "${gdb_conf_str}" "${gdb_targets}"
+fi
+
+if [[ $DO_MAKE_TARBALL = true ]]; then
+    echo "Making tarball"
+    (
+        tarball_dir=$(realpath -m "$TARBALL_DIR")
+        archive_name=${CONFIG_ID}.tar.gz
+        install_dir=$(realpath -m "${BUILD_DIR}/${CONFIG_ID}/install/${TARGET}/stage2")
+        mkdir -p $tarball_dir
+        cd $tarball_dir
+
+        tar cvzf "${archive_name}" -C "${install_dir}" .
+    )
+fi
