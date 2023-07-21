@@ -337,7 +337,7 @@ if [[ $DO_BUILD_CROSS = true ]]; then
     stage2_install_dir=$(realpath -m "${BUILD_DIR}/${CONFIG_ID}/install/${TARGET}/stage2")
     stage2_src_dir=$(realpath "${GCC_SRC_DIR}")
     stage2_conf_str="--target=${TARGET} --prefix=${stage2_install_dir} ${CONFIG_STAGE2} --with-sysroot=${stage2_install_dir}/${TARGET}"
-    stage2_targets="all-gcc all-target-libgcc all-target-libada install-gcc install-target-libgcc install-target-libada install-binutils install-gas install-ld"
+    stage2_targets="all-gcc all-target-libgcc all-gnattools install-gcc install-target-libgcc install-binutils install-gas install-ld install-gnattools"
 
     #build "${stage2_build_dir}" "${stage2_src_dir}" "${stage2_conf_str}" "${stage2_targets}"
 

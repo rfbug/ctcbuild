@@ -1,3 +1,8 @@
+DO_BUILD_NATIVE=false
+DO_BUILD_CROSS=false
+DO_MAKE_TARBALL=true
+
+
 #----------------------------------------------------------------------------
 # Unique configuration id
 #----------------------------------------------------------------------------
@@ -70,7 +75,8 @@ CONFIG_STAGE1="--disable-libatomic --disable-libsanitizer --disable-libssp\
 # Config options for stage2 cross compiler
 CONFIG_STAGE2="--disable-shared --disable-nls --disable-threads --disable-tls\
  --enable-checking=release --enable-languages=c,ada --with-newlib\
- --with-gnu-as --with-gnu-ld --with-multilib-list=rmprofile"
+ --with-gnu-as --with-gnu-ld --with-multilib-list=rmprofile\
+ --disable-libada"
 # Config for gdb build
 CONFIG_GDB="--with-gnu-ld --enable-plugins --enable-tui --disable-gas\
  --disable-binutils --disable-ld --disable-gold --disable-gprof\

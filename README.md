@@ -143,3 +143,19 @@ build as described in the GCC documentation.
 ### gdb
 `--with-gnu-ld --enable-plugins --enable-tui --with-pkgversion=Linaro_GDB-2019.12 --disable-gas --disable-binutils --disable-ld --disable-gold --disable-gprof --with-python=yes`
 
+
+## Building gnattols without libada
+
+When building a bare-metal toolchain, there will typically be no Ada
+runtime system available, thus the compiler cannot produce executables
+for the target yet. Therefore it is not possible to build the libada
+GCC make target. Building the gnattools should not depend on libada but
+for some reason, when libada is added to the Makefile by the configure
+script, when gnattols is selected.
+
+The AVR-Ada project solves this by patching the gcc configure script:
+https://github.com/johnleimon/avr-ada/blob/master/avr-ada/patches/gcc/4.9.2/23-gcc-4.9-ada-Makefile.patch
+
+Since gprconfig searches for the 'gnat' executable, it seems like a good
+idead to have the gnattols available.
+
